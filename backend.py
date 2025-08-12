@@ -382,7 +382,7 @@ if __name__ == '__main__':
     init_db()
     
     # Configurazione per Railway
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8000))
     
     # Avvia server
     print("🚀 Avvio Gestione spese by Ezio - Backend")
