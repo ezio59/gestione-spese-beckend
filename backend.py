@@ -1,113 +1,78 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import os
+import sqlite3
 import string
 import random
 from datetime import datetime
-from urllib.parse import urlparse
 
 app = Flask(__name__)
 CORS(app)
 
-# Ottieni l'URL del database da Heroku
-DATABASE_URL = os.environ.get('DATABASE_URL')
-
-# Fix per Heroku: sostituisci postgres:// con postgresql://
-if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+DATABASE = 'gestione_spese.db'
 
 def get_db_connection():
-    """Crea una connessione al database PostgreSQL"""
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL non configurata")
-    
-    try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        return conn
-    except Exception as e:
-        print(f"Errore connessione database: {e}")
-        raise
+    """Crea una connessione al database SQLite"""
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# Inizializzazione database
 def init_db():
     """Crea le tabelle se non esistono"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Tabella gruppi
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS groups (
-                id SERIAL PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Tabella partecipanti
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS participants (
-                id SERIAL PRIMARY KEY,
-                group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Tabella spese
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS expenses (
-                id SERIAL PRIMARY KEY,
-                group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
-                description TEXT NOT NULL,
-                amount REAL NOT NULL,
-                payer TEXT NOT NULL,
-                participants TEXT NOT NULL,
-                date TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        print("Database inizializzato con successo!")
-        return True
-    except Exception as e:
-        print(f"Errore inizializzazione database: {e}")
-        return False
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Tabella gruppi
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Tabella partecipanti
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS participants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER,
+            name TEXT NOT NULL,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # Tabella spese
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER,
+            description TEXT NOT NULL,
+            amount REAL NOT NULL,
+            payer TEXT NOT NULL,
+            participants TEXT NOT NULL,
+            date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
-# NON inizializzare il database all'avvio per evitare crash del worker
-# L'inizializzazione verrà fatta alla prima richiesta
-
-db_initialized = False
-
-def ensure_db_initialized():
-    """Assicura che il database sia inizializzato"""
-    global db_initialized
-    if not db_initialized and DATABASE_URL:
-        try:
-            init_db()
-            db_initialized = True
-        except Exception as e:
-            print(f"Errore durante l'inizializzazione del database: {e}")
+# Inizializza il database all'avvio
+init_db()
 
 def generate_group_code():
     """Genera un codice gruppo univoco"""
     while True:
         code = 'SPESE-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT id FROM groups WHERE code = %s', (code,))
+        cursor.execute('SELECT id FROM groups WHERE code = ?', (code,))
         exists = cursor.fetchone()
-        cursor.close()
         conn.close()
-        
         if not exists:
             return code
 
@@ -115,50 +80,12 @@ def generate_group_code():
 def home():
     return jsonify({
         'message': 'Gestione spese by Ezio - Backend attivo',
-        'status': 'ok',
-        'database': 'PostgreSQL',
-        'database_url_configured': bool(DATABASE_URL)
+        'status': 'ok'
     })
-
-@app.route('/api/health')
-def health():
-    try:
-        # Test connessione database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1')
-        cursor.close()
-        conn.close()
-        db_status = 'connected'
-    except Exception as e:
-        db_status = f'error: {str(e)}'
-    
-    return jsonify({
-        'status': 'ok',
-        'message': 'Backend attivo',
-        'database': 'PostgreSQL',
-        'database_status': db_status
-    })
-
-@app.route('/api/init-db', methods=['POST'])
-def init_database():
-    """Endpoint per inizializzare il database manualmente"""
-    try:
-        result = init_db()
-        if result:
-            global db_initialized
-            db_initialized = True
-            return jsonify({'success': True, 'message': 'Database inizializzato con successo'})
-        else:
-            return jsonify({'success': False, 'error': 'Errore durante l\'inizializzazione'}), 500
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/groups', methods=['POST'])
 def create_group():
     try:
-        ensure_db_initialized()
-        
         data = request.get_json()
         name = data.get('name')
         description = data.get('description', '')
@@ -170,15 +97,12 @@ def create_group():
         
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute(
-            'INSERT INTO groups (code, name, description) VALUES (%s, %s, %s) RETURNING id',
+            'INSERT INTO groups (code, name, description) VALUES (?, ?, ?)',
             (code, name, description)
         )
-        
-        group_id = cursor.fetchone()[0]
+        group_id = cursor.lastrowid
         conn.commit()
-        cursor.close()
         conn.close()
         
         return jsonify({
@@ -192,38 +116,32 @@ def create_group():
         })
         
     except Exception as e:
-        print(f"Errore create_group: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/groups/<code>')
 def get_group(code):
     try:
-        ensure_db_initialized()
-        
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('SELECT id, code, name, description FROM groups WHERE code = %s', (code,))
+        cursor.execute('SELECT id, code, name, description FROM groups WHERE code = ?', (code,))
         group = cursor.fetchone()
         
         if not group:
-            cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         group_data = {
-            'id': group[0],
-            'code': group[1],
-            'name': group[2],
-            'description': group[3]
+            'id': group['id'],
+            'code': group['code'],
+            'name': group['name'],
+            'description': group['description']
         }
         
         # Ottieni partecipanti
-        cursor.execute('SELECT name FROM participants WHERE group_id = %s', (group[0],))
-        participants = [row[0] for row in cursor.fetchall()]
+        cursor.execute('SELECT name FROM participants WHERE group_id = ?', (group['id'],))
+        participants = [row['name'] for row in cursor.fetchall()]
         group_data['participants'] = participants
         
-        cursor.close()
         conn.close()
         
         return jsonify({
@@ -232,14 +150,11 @@ def get_group(code):
         })
         
     except Exception as e:
-        print(f"Errore get_group: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/groups/<int:group_id>/participants', methods=['POST'])
 def add_participant(group_id):
     try:
-        ensure_db_initialized()
-        
         data = request.get_json()
         name = data.get('name')
         
@@ -250,26 +165,22 @@ def add_participant(group_id):
         cursor = conn.cursor()
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
         if not cursor.fetchone():
-            cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che il partecipante non esista già
-        cursor.execute('SELECT id FROM participants WHERE group_id = %s AND name = %s', (group_id, name))
+        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, name))
         if cursor.fetchone():
-            cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Partecipante già presente'}), 400
         
         cursor.execute(
-            'INSERT INTO participants (group_id, name) VALUES (%s, %s)',
+            'INSERT INTO participants (group_id, name) VALUES (?, ?)',
             (group_id, name)
         )
-        
         conn.commit()
-        cursor.close()
         conn.close()
         
         return jsonify({
@@ -278,14 +189,137 @@ def add_participant(group_id):
         })
         
     except Exception as e:
-        print(f"Errore add_participant: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>/participants/<participant_name>', methods=['PUT'])
+def update_participant(group_id, participant_name):
+    """Modifica il nome di un partecipante"""
+    try:
+        data = request.get_json()
+        new_name = data.get('new_name')
+        
+        if not new_name:
+            return jsonify({'success': False, 'error': 'Nuovo nome richiesto'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che il gruppo esista
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
+        
+        # Verifica che il partecipante esista
+        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, participant_name))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Partecipante non trovato'}), 404
+        
+        # Verifica che il nuovo nome non sia già in uso
+        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, new_name))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Nome già in uso'}), 400
+        
+        # Aggiorna il nome del partecipante
+        cursor.execute(
+            'UPDATE participants SET name = ? WHERE group_id = ? AND name = ?',
+            (new_name, group_id, participant_name)
+        )
+        
+        # Aggiorna anche le spese dove questo partecipante è il pagatore
+        cursor.execute(
+            'UPDATE expenses SET payer = ? WHERE group_id = ? AND payer = ?',
+            (new_name, group_id, participant_name)
+        )
+        
+        # Aggiorna le spese dove questo partecipante è tra i partecipanti
+        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = ?', (group_id,))
+        expenses = cursor.fetchall()
+        for expense in expenses:
+            participants_list = expense['participants'].split(',')
+            if participant_name in participants_list:
+                participants_list = [new_name if p == participant_name else p for p in participants_list]
+                new_participants = ','.join(participants_list)
+                cursor.execute(
+                    'UPDATE expenses SET participants = ? WHERE id = ?',
+                    (new_participants, expense['id'])
+                )
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Partecipante modificato'
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>/participants/<participant_name>', methods=['DELETE'])
+def delete_participant(group_id, participant_name):
+    """Elimina un partecipante e le spese associate"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che il gruppo esista
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
+        
+        # Verifica che il partecipante esista
+        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, participant_name))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Partecipante non trovato'}), 404
+        
+        # Elimina il partecipante
+        cursor.execute(
+            'DELETE FROM participants WHERE group_id = ? AND name = ?',
+            (group_id, participant_name)
+        )
+        
+        # Elimina le spese dove questo partecipante è il pagatore
+        cursor.execute(
+            'DELETE FROM expenses WHERE group_id = ? AND payer = ?',
+            (group_id, participant_name)
+        )
+        
+        # Aggiorna le spese dove questo partecipante è tra i partecipanti
+        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = ?', (group_id,))
+        expenses = cursor.fetchall()
+        for expense in expenses:
+            participants_list = expense['participants'].split(',')
+            if participant_name in participants_list:
+                participants_list = [p for p in participants_list if p != participant_name]
+                if len(participants_list) == 0:
+                    # Se non ci sono più partecipanti, elimina la spesa
+                    cursor.execute('DELETE FROM expenses WHERE id = ?', (expense['id'],))
+                else:
+                    new_participants = ','.join(participants_list)
+                    cursor.execute(
+                        'UPDATE expenses SET participants = ? WHERE id = ?',
+                        (new_participants, expense['id'])
+                    )
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Partecipante eliminato'
+        })
+        
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/groups/<int:group_id>/expenses', methods=['POST'])
 def add_expense(group_id):
     try:
-        ensure_db_initialized()
-        
         data = request.get_json()
         description = data.get('description')
         amount = data.get('amount')
@@ -300,21 +334,18 @@ def add_expense(group_id):
         cursor = conn.cursor()
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
         if not cursor.fetchone():
-            cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         participants_str = ','.join(participants)
         
         cursor.execute(
-            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (%s, %s, %s, %s, %s, %s)',
+            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (?, ?, ?, ?, ?, ?)',
             (group_id, description, amount, payer, participants_str, date)
         )
-        
         conn.commit()
-        cursor.close()
         conn.close()
         
         return jsonify({
@@ -323,34 +354,107 @@ def add_expense(group_id):
         })
         
     except Exception as e:
-        print(f"Errore add_expense: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>/expenses/<int:expense_id>', methods=['PUT'])
+def update_expense(group_id, expense_id):
+    """Modifica una spesa esistente"""
+    try:
+        data = request.get_json()
+        description = data.get('description')
+        amount = data.get('amount')
+        payer = data.get('payer')
+        participants = data.get('participants', [])
+        date = data.get('date')
+        
+        if not all([description, amount, payer, participants, date]):
+            return jsonify({'success': False, 'error': 'Tutti i campi sono richiesti'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che il gruppo esista
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
+        
+        # Verifica che la spesa esista
+        cursor.execute('SELECT id FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Spesa non trovata'}), 404
+        
+        participants_str = ','.join(participants)
+        
+        cursor.execute(
+            'UPDATE expenses SET description = ?, amount = ?, payer = ?, participants = ?, date = ? WHERE id = ? AND group_id = ?',
+            (description, amount, payer, participants_str, date, expense_id, group_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Spesa modificata'
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>/expenses/<int:expense_id>', methods=['DELETE'])
+def delete_expense(group_id, expense_id):
+    """Elimina una spesa"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che il gruppo esista
+        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
+        
+        # Verifica che la spesa esista
+        cursor.execute('SELECT id FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Spesa non trovata'}), 404
+        
+        # Elimina la spesa
+        cursor.execute('DELETE FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Spesa eliminata'
+        })
+        
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/groups/<int:group_id>/expenses')
 def get_expenses(group_id):
     try:
-        ensure_db_initialized()
-        
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute(
-            'SELECT id, description, amount, payer, participants, date FROM expenses WHERE group_id = %s ORDER BY created_at DESC',
+            'SELECT id, description, amount, payer, participants, date FROM expenses WHERE group_id = ? ORDER BY created_at DESC',
             (group_id,)
         )
         
         expenses = []
         for row in cursor.fetchall():
             expenses.append({
-                'id': row[0],
-                'description': row[1],
-                'amount': row[2],
-                'payer': row[3],
-                'participants': row[4].split(','),
-                'date': row[5]
+                'id': row['id'],
+                'description': row['description'],
+                'amount': row['amount'],
+                'payer': row['payer'],
+                'participants': row['participants'].split(','),
+                'date': row['date']
             })
         
-        cursor.close()
         conn.close()
         
         return jsonify({
@@ -359,10 +463,10 @@ def get_expenses(group_id):
         })
         
     except Exception as e:
-        print(f"Errore get_expenses: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
+    import os
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
