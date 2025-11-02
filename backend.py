@@ -81,15 +81,20 @@ def init_db():
         print(f"Errore inizializzazione database: {e}")
         return False
 
-# Inizializza il database all'avvio (con gestione errori)
-try:
-    if DATABASE_URL:
-        init_db()
-    else:
-        print("ATTENZIONE: DATABASE_URL non configurata!")
-except Exception as e:
-    print(f"ATTENZIONE: Errore durante l'inizializzazione del database: {e}")
-    print("L'applicazione continuerà ma potrebbe non funzionare correttamente")
+# NON inizializzare il database all'avvio per evitare crash del worker
+# L'inizializzazione verrà fatta alla prima richiesta
+
+db_initialized = False
+
+def ensure_db_initialized():
+    """Assicura che il database sia inizializzato"""
+    global db_initialized
+    if not db_initialized and DATABASE_URL:
+        try:
+            init_db()
+            db_initialized = True
+        except Exception as e:
+            print(f"Errore durante l'inizializzazione del database: {e}")
 
 def generate_group_code():
     """Genera un codice gruppo univoco"""
@@ -135,9 +140,25 @@ def health():
         'database_status': db_status
     })
 
+@app.route('/api/init-db', methods=['POST'])
+def init_database():
+    """Endpoint per inizializzare il database manualmente"""
+    try:
+        result = init_db()
+        if result:
+            global db_initialized
+            db_initialized = True
+            return jsonify({'success': True, 'message': 'Database inizializzato con successo'})
+        else:
+            return jsonify({'success': False, 'error': 'Errore durante l\'inizializzazione'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/groups', methods=['POST'])
 def create_group():
     try:
+        ensure_db_initialized()
+        
         data = request.get_json()
         name = data.get('name')
         description = data.get('description', '')
@@ -177,6 +198,8 @@ def create_group():
 @app.route('/api/groups/<code>')
 def get_group(code):
     try:
+        ensure_db_initialized()
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -215,6 +238,8 @@ def get_group(code):
 @app.route('/api/groups/<int:group_id>/participants', methods=['POST'])
 def add_participant(group_id):
     try:
+        ensure_db_initialized()
+        
         data = request.get_json()
         name = data.get('name')
         
@@ -259,6 +284,8 @@ def add_participant(group_id):
 @app.route('/api/groups/<int:group_id>/expenses', methods=['POST'])
 def add_expense(group_id):
     try:
+        ensure_db_initialized()
+        
         data = request.get_json()
         description = data.get('description')
         amount = data.get('amount')
@@ -302,6 +329,8 @@ def add_expense(group_id):
 @app.route('/api/groups/<int:group_id>/expenses')
 def get_expenses(group_id):
     try:
+        ensure_db_initialized()
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
