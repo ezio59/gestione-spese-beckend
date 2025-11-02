@@ -20,6 +20,9 @@ if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
 
 def get_db_connection():
     """Crea una connessione al database PostgreSQL"""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL non configurata")
+    
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
         return conn
@@ -73,12 +76,20 @@ def init_db():
         cursor.close()
         conn.close()
         print("Database inizializzato con successo!")
+        return True
     except Exception as e:
         print(f"Errore inizializzazione database: {e}")
-        raise
+        return False
 
-# Inizializza il database all'avvio
-init_db()
+# Inizializza il database all'avvio (con gestione errori)
+try:
+    if DATABASE_URL:
+        init_db()
+    else:
+        print("ATTENZIONE: DATABASE_URL non configurata!")
+except Exception as e:
+    print(f"ATTENZIONE: Errore durante l'inizializzazione del database: {e}")
+    print("L'applicazione continuerà ma potrebbe non funzionare correttamente")
 
 def generate_group_code():
     """Genera un codice gruppo univoco"""
@@ -100,15 +111,28 @@ def home():
     return jsonify({
         'message': 'Gestione spese by Ezio - Backend attivo',
         'status': 'ok',
-        'database': 'PostgreSQL'
+        'database': 'PostgreSQL',
+        'database_url_configured': bool(DATABASE_URL)
     })
 
 @app.route('/api/health')
 def health():
+    try:
+        # Test connessione database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1')
+        cursor.close()
+        conn.close()
+        db_status = 'connected'
+    except Exception as e:
+        db_status = f'error: {str(e)}'
+    
     return jsonify({
         'status': 'ok',
         'message': 'Backend attivo',
-        'database': 'PostgreSQL'
+        'database': 'PostgreSQL',
+        'database_status': db_status
     })
 
 @app.route('/api/groups', methods=['POST'])
