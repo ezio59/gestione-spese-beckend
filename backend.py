@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import os
 import string
 import random
 from datetime import datetime
@@ -8,23 +10,22 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-DATABASE = 'gestione_spese.db'
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def get_db_connection():
-    """Crea una connessione al database SQLite"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
+    """Crea una connessione al database PostgreSQL"""
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     return conn
 
 def init_db():
     """Crea le tabelle se non esistono"""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     # Tabella gruppi
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             code TEXT UNIQUE NOT NULL,
             name TEXT NOT NULL,
             description TEXT,
@@ -35,7 +36,7 @@ def init_db():
     # Tabella partecipanti
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS participants (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             group_id INTEGER,
             name TEXT NOT NULL,
             joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -46,10 +47,10 @@ def init_db():
     # Tabella spese
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             group_id INTEGER,
             description TEXT NOT NULL,
-            amount REAL NOT NULL,
+            amount NUMERIC NOT NULL,
             payer TEXT NOT NULL,
             participants TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -69,8 +70,8 @@ def generate_group_code():
     while True:
         code = 'SPESE-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM groups WHERE code = ?', (code,))
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute('SELECT id FROM groups WHERE code = %s', (code,))
         exists = cursor.fetchone()
         conn.close()
         if not exists:
@@ -96,14 +97,14 @@ def create_group():
         code = generate_group_code()
         
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
-            'INSERT INTO groups (code, name, description) VALUES (?, ?, ?)',
+            'INSERT INTO groups (code, name, description) VALUES (%s, %s, %s) RETURNING id',
             (code, name, description)
         )
-        group_id = cursor.lastrowid
+        group_id = cursor.fetchone()[0]
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -122,8 +123,8 @@ def create_group():
 def get_group(code):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, code, name, description FROM groups WHERE code = ?', (code,))
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute('SELECT id, code, name, description FROM groups WHERE code = %s', (code,))
         group = cursor.fetchone()
         
         if not group:
@@ -138,7 +139,7 @@ def get_group(code):
         }
         
         # Ottieni partecipanti
-        cursor.execute('SELECT name FROM participants WHERE group_id = ?', (group['id'],))
+        cursor.execute('SELECT name FROM participants WHERE group_id = %s', (group['id'],))
         participants = [row['name'] for row in cursor.fetchall()]
         group_data['participants'] = participants
         
@@ -162,26 +163,26 @@ def add_participant(group_id):
             return jsonify({'success': False, 'error': 'Nome partecipante richiesto'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che il partecipante non esista già
-        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, name))
+        cursor.execute('SELECT id FROM participants WHERE group_id = %s AND name = %s', (group_id, name))
         if cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Partecipante già presente'}), 400
         
         cursor.execute(
-            'INSERT INTO participants (group_id, name) VALUES (?, ?)',
+            'INSERT INTO participants (group_id, name) VALUES (%s, %s)',
             (group_id, name)
         )
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -202,40 +203,40 @@ def update_participant(group_id, participant_name):
             return jsonify({'success': False, 'error': 'Nuovo nome richiesto'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che il partecipante esista
-        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, participant_name))
+        cursor.execute('SELECT id FROM participants WHERE group_id = %s AND name = %s', (group_id, participant_name))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Partecipante non trovato'}), 404
         
         # Verifica che il nuovo nome non sia già in uso
-        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, new_name))
+        cursor.execute('SELECT id FROM participants WHERE group_id = %s AND name = %s', (group_id, new_name))
         if cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Nome già in uso'}), 400
         
         # Aggiorna il nome del partecipante
         cursor.execute(
-            'UPDATE participants SET name = ? WHERE group_id = ? AND name = ?',
+            'UPDATE participants SET name = %s WHERE group_id = %s AND name = %s',
             (new_name, group_id, participant_name)
         )
         
         # Aggiorna anche le spese dove questo partecipante è il pagatore
         cursor.execute(
-            'UPDATE expenses SET payer = ? WHERE group_id = ? AND payer = ?',
+            'UPDATE expenses SET payer = %s WHERE group_id = %s AND payer = %s',
             (new_name, group_id, participant_name)
         )
         
         # Aggiorna le spese dove questo partecipante è tra i partecipanti
-        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = ?', (group_id,))
+        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = %s', (group_id,))
         expenses = cursor.fetchall()
         for expense in expenses:
             participants_list = expense['participants'].split(',')
@@ -243,12 +244,12 @@ def update_participant(group_id, participant_name):
                 participants_list = [new_name if p == participant_name else p for p in participants_list]
                 new_participants = ','.join(participants_list)
                 cursor.execute(
-                    'UPDATE expenses SET participants = ? WHERE id = ?',
+                    'UPDATE expenses SET participants = %s WHERE id = %s',
                     (new_participants, expense['id'])
                 )
         
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -263,34 +264,34 @@ def delete_participant(group_id, participant_name):
     """Elimina un partecipante e le spese associate"""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che il partecipante esista
-        cursor.execute('SELECT id FROM participants WHERE group_id = ? AND name = ?', (group_id, participant_name))
+        cursor.execute('SELECT id FROM participants WHERE group_id = %s AND name = %s', (group_id, participant_name))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Partecipante non trovato'}), 404
         
         # Elimina il partecipante
         cursor.execute(
-            'DELETE FROM participants WHERE group_id = ? AND name = ?',
+            'DELETE FROM participants WHERE group_id = %s AND name = %s',
             (group_id, participant_name)
         )
         
         # Elimina le spese dove questo partecipante è il pagatore
         cursor.execute(
-            'DELETE FROM expenses WHERE group_id = ? AND payer = ?',
+            'DELETE FROM expenses WHERE group_id = %s AND payer = %s',
             (group_id, participant_name)
         )
         
         # Aggiorna le spese dove questo partecipante è tra i partecipanti
-        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = ?', (group_id,))
+        cursor.execute('SELECT id, participants FROM expenses WHERE group_id = %s', (group_id,))
         expenses = cursor.fetchall()
         for expense in expenses:
             participants_list = expense['participants'].split(',')
@@ -298,16 +299,16 @@ def delete_participant(group_id, participant_name):
                 participants_list = [p for p in participants_list if p != participant_name]
                 if len(participants_list) == 0:
                     # Se non ci sono più partecipanti, elimina la spesa
-                    cursor.execute('DELETE FROM expenses WHERE id = ?', (expense['id'],))
+                    cursor.execute('DELETE FROM expenses WHERE id = %s', (expense['id'],))
                 else:
                     new_participants = ','.join(participants_list)
                     cursor.execute(
-                        'UPDATE expenses SET participants = ? WHERE id = ?',
+                        'UPDATE expenses SET participants = %s WHERE id = %s',
                         (new_participants, expense['id'])
                     )
         
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -331,10 +332,10 @@ def add_expense(group_id):
             return jsonify({'success': False, 'error': 'Tutti i campi sono richiesti'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
@@ -342,11 +343,11 @@ def add_expense(group_id):
         participants_str = ','.join(participants)
         
         cursor.execute(
-            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (?, ?, ?, %s, %s, %s)',
             (group_id, description, amount, payer, participants_str, date)
         )
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -371,16 +372,16 @@ def update_expense(group_id, expense_id):
             return jsonify({'success': False, 'error': 'Tutti i campi sono richiesti'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che la spesa esista
-        cursor.execute('SELECT id FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        cursor.execute('SELECT id FROM expenses WHERE id = %s AND group_id = %s', (expense_id, group_id))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Spesa non trovata'}), 404
@@ -388,11 +389,11 @@ def update_expense(group_id, expense_id):
         participants_str = ','.join(participants)
         
         cursor.execute(
-            'UPDATE expenses SET description = ?, amount = ?, payer = ?, participants = ?, date = ? WHERE id = ? AND group_id = ?',
+            'UPDATE expenses SET description = ?, amount = ?, payer = ?, participants = ?, date = %s WHERE id = %s AND group_id = %s',
             (description, amount, payer, participants_str, date, expense_id, group_id)
         )
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -407,24 +408,24 @@ def delete_expense(group_id, expense_id):
     """Elimina una spesa"""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # Verifica che il gruppo esista
-        cursor.execute('SELECT id FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Gruppo non trovato'}), 404
         
         # Verifica che la spesa esista
-        cursor.execute('SELECT id FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        cursor.execute('SELECT id FROM expenses WHERE id = %s AND group_id = %s', (expense_id, group_id))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'success': False, 'error': 'Spesa non trovata'}), 404
         
         # Elimina la spesa
-        cursor.execute('DELETE FROM expenses WHERE id = ? AND group_id = ?', (expense_id, group_id))
+        cursor.execute('DELETE FROM expenses WHERE id = %s AND group_id = %s', (expense_id, group_id))
         conn.commit()
-        conn.close()
+    conn.close()
         
         return jsonify({
             'success': True,
@@ -438,9 +439,9 @@ def delete_expense(group_id, expense_id):
 def get_expenses(group_id):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
-            'SELECT id, description, amount, payer, participants, date FROM expenses WHERE group_id = ? ORDER BY created_at DESC',
+            'SELECT id, description, amount, payer, participants, date FROM expenses WHERE group_id = %s ORDER BY created_at DESC',
             (group_id,)
         )
         
