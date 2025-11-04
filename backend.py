@@ -12,9 +12,10 @@ CORS(app)
 
 def get_db_connection():
     """Crea una connessione al database PostgreSQL"""
-    DATABASE_URL = os.environ.get('DATABASE_URL')
+    # Heroku può usare DATABASE o DATABASE_URL
+    DATABASE_URL = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE')
     if not DATABASE_URL:
-        raise Exception("DATABASE_URL non configurata")
+        raise Exception("DATABASE_URL o DATABASE non configurata")
     # Heroku fornisce postgres:// ma psycopg2 richiede postgresql://
     if DATABASE_URL.startswith('postgres://'):
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
