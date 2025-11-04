@@ -10,12 +10,12 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-DATABASE = 'gestione_spese.db'
-
 def get_db_connection():
-    """Crea una connessione al database SQLite"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
+    """Crea una connessione al database PostgreSQL"""
+    DATABASE_URL = os.environ.get('DATABASE_URL')
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL non configurata")
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def init_db():
