@@ -10,17 +10,18 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE = 'gestione_spese.db'
 
 def get_db_connection():
-    """Crea una connessione al database PostgreSQL"""
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    """Crea una connessione al database SQLite"""
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     """Crea le tabelle se non esistono"""
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor = conn.cursor()
     
     # Tabella gruppi
     cursor.execute('''
@@ -50,7 +51,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             group_id INTEGER,
             description TEXT NOT NULL,
-            amount NUMERIC NOT NULL,
+            amount REAL NOT NULL,
             payer TEXT NOT NULL,
             participants TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -70,7 +71,7 @@ def generate_group_code():
     while True:
         code = 'SPESE-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute('SELECT id FROM groups WHERE code = %s', (code,))
         exists = cursor.fetchone()
         conn.close()
@@ -97,14 +98,14 @@ def create_group():
         code = generate_group_code()
         
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO groups (code, name, description) VALUES (%s, %s, %s) RETURNING id',
+            'INSERT INTO groups (code, name, description) VALUES (%s, %s, %s)',
             (code, name, description)
         )
-        group_id = cursor.fetchone()[0]
+        group_id = cursor.lastrowid
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -123,7 +124,7 @@ def create_group():
 def get_group(code):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute('SELECT id, code, name, description FROM groups WHERE code = %s', (code,))
         group = cursor.fetchone()
         
@@ -163,7 +164,7 @@ def add_participant(group_id):
             return jsonify({'success': False, 'error': 'Nome partecipante richiesto'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -182,7 +183,7 @@ def add_participant(group_id):
             (group_id, name)
         )
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -203,7 +204,7 @@ def update_participant(group_id, participant_name):
             return jsonify({'success': False, 'error': 'Nuovo nome richiesto'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -249,7 +250,7 @@ def update_participant(group_id, participant_name):
                 )
         
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -264,7 +265,7 @@ def delete_participant(group_id, participant_name):
     """Elimina un partecipante e le spese associate"""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -308,7 +309,7 @@ def delete_participant(group_id, participant_name):
                     )
         
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -332,7 +333,7 @@ def add_expense(group_id):
             return jsonify({'success': False, 'error': 'Tutti i campi sono richiesti'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -343,11 +344,11 @@ def add_expense(group_id):
         participants_str = ','.join(participants)
         
         cursor.execute(
-            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (?, ?, ?, %s, %s, %s)',
+            'INSERT INTO expenses (group_id, description, amount, payer, participants, date) VALUES (%s, %s, %s, %s, %s, %s)',
             (group_id, description, amount, payer, participants_str, date)
         )
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -372,7 +373,7 @@ def update_expense(group_id, expense_id):
             return jsonify({'success': False, 'error': 'Tutti i campi sono richiesti'}), 400
         
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -389,11 +390,11 @@ def update_expense(group_id, expense_id):
         participants_str = ','.join(participants)
         
         cursor.execute(
-            'UPDATE expenses SET description = ?, amount = ?, payer = ?, participants = ?, date = %s WHERE id = %s AND group_id = %s',
+            'UPDATE expenses SET description = %s, amount = %s, payer = %s, participants = %s, date = %s WHERE id = %s AND group_id = %s',
             (description, amount, payer, participants_str, date, expense_id, group_id)
         )
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -408,7 +409,7 @@ def delete_expense(group_id, expense_id):
     """Elimina una spesa"""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         
         # Verifica che il gruppo esista
         cursor.execute('SELECT id FROM groups WHERE id = %s', (group_id,))
@@ -425,7 +426,7 @@ def delete_expense(group_id, expense_id):
         # Elimina la spesa
         cursor.execute('DELETE FROM expenses WHERE id = %s AND group_id = %s', (expense_id, group_id))
         conn.commit()
-    conn.close()
+        conn.close()
         
         return jsonify({
             'success': True,
@@ -439,7 +440,7 @@ def delete_expense(group_id, expense_id):
 def get_expenses(group_id):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute(
             'SELECT id, description, amount, payer, participants, date FROM expenses WHERE group_id = %s ORDER BY created_at DESC',
             (group_id,)
