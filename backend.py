@@ -15,6 +15,9 @@ def get_db_connection():
     DATABASE_URL = os.environ.get('DATABASE_URL')
     if not DATABASE_URL:
         raise Exception("DATABASE_URL non configurata")
+    # Heroku fornisce postgres:// ma psycopg2 richiede postgresql://
+    if DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
     conn = psycopg2.connect(DATABASE_URL)
     return conn
 
